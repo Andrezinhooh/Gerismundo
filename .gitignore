@@ -1,0 +1,11 @@
+/build/
+/out/
+/work/
+/_tools/
+/vcpkg_installed/
+/config.json
+/.vs/
+*.user
+*.pdb
+*.log
+__pycache__/

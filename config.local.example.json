@@ -1,0 +1,7 @@
+{
+  "signalingUrl": "ws://127.0.0.1:8080",
+  "room": "amigos",
+  "displayName": "Seu nome",
+  "accessToken": "troque-por-um-token-aleatorio-com-pelo-menos-24-caracteres",
+  "iceServers": []
+}

@@ -1,0 +1,5 @@
+# Replace the hostname, supply your DNS record, and run Caddy on the same host
+# as native-call-signaling. Caddy handles WebSocket Upgrade automatically.
+chamadas.seudominio.com {
+    reverse_proxy 127.0.0.1:8080
+}

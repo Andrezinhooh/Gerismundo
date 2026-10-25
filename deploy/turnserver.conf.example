@@ -1,0 +1,13 @@
+# coturn example. Replace credentials, realm and IPs before starting the service.
+# See docs/signaling.md. This project uses TURN/UDP through libjuice.
+listening-port=3478
+fingerprint
+lt-cred-mech
+realm=turn.seudominio.com
+user=amigos:SUBSTITUA_POR_UMA_SENHA_FORTE
+min-port=49160
+max-port=49200
+no-cli
+# If the server is behind NAT, configure the actual public/private mapping:
+# external-ip=PUBLIC_IP/PRIVATE_IP
+# Permit UDP3478 and the UDP relay range in the host/network firewall.

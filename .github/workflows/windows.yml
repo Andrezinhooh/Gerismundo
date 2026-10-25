@@ -1,0 +1,25 @@
+name: Windows native build
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: 817892b0ecbc6af994dd6df999c73faf795adbf2
+          path: _tools/vcpkg
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          & ./_tools/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_ROOT=$((Resolve-Path ./_tools/vcpkg).Path)" >> $env:GITHUB_ENV
+      - name: Install test dependency
+        run: python -m pip install "websockets>=15,<17"
+      - name: Configure
+        run: cmake --preset windows
+      - name: Build
+        run: cmake --build --preset windows
+      - name: Test
+        run: ctest --preset windows

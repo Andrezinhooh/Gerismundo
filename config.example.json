@@ -1,0 +1,14 @@
+{
+  "signalingUrl": "ws://127.0.0.1:8080",
+  "room": "amigos",
+  "displayName": "Seu nome",
+  "accessToken": "substitua-pelo-token-do-servidor",
+  "iceServers": [
+    { "url": "stun:stun.l.google.com:19302" },
+    {
+      "url": "turn:turn.seudominio.com:3478?transport=udp",
+      "username": "usuario",
+      "password": "substitua-pela-credencial-turn"
+    }
+  ]
+}
