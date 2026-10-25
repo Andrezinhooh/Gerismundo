@@ -41,6 +41,7 @@ jobs:
         shell: pwsh
         run: |
           $sdk = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/Include" -Directory |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
             Where-Object { [version]$_.Name -ge [version]'10.0.22621.0' } |
             Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
           if (-not $sdk) { throw 'Windows SDK 22621 or later is required' }
