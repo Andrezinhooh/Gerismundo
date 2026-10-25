@@ -18,7 +18,9 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <deque>
 #include <future>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -595,6 +597,12 @@ struct VideoDecoder::Impl {
     bool started = false, bt709 = true;
     LONG stride = 0;
     UINT displayWidth = 0, displayHeight = 0, offsetX = 0, offsetY = 0;
+    // The MF decoder may normalize output sample times (including returning
+    // zero), while the call needs the common sender RTP timeline. Each input
+    // here is one complete H264 access unit; our Baseline encoder disables B
+    // pictures, so decoded pictures retain input order. Keep the source PTS
+    // until ProcessOutput actually emits its corresponding picture.
+    std::deque<std::uint64_t> inputPts;
     MfScope mf;
 
     ~Impl() {
@@ -602,6 +610,7 @@ struct VideoDecoder::Impl {
         try { ComScope com; transform.Reset(); } catch (...) { transform.Reset(); }
     }
     void initialize() {
+        inputPts.clear();
         check(CoCreateInstance(CLSID_CMSH264DecoderMFT, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&transform)), "Create H264 decoder");
         setCodec(transform.Get(), CODECAPI_AVLowLatencyMode, TRUE);
         auto input = videoType(MFVideoFormat_H264, VideoQuality{1920, 1080, 30, 4000000});
@@ -645,7 +654,23 @@ struct VideoDecoder::Impl {
             return;
         }
     }
-    VideoFrame convert(IMFSample* sample, std::uint64_t fallbackPts) {
+    std::uint64_t picturePts(IMFSample* sample) {
+        if (inputPts.empty())
+            throw std::runtime_error("Decoder emitted a picture without a corresponding source timestamp");
+        auto chosen = inputPts.begin();
+        LONGLONG reported = 0;
+        if (SUCCEEDED(sample->GetSampleTime(&reported)) && reported >= 0) {
+            const auto source = static_cast<std::uint64_t>(reported / 10);
+            const auto matched = std::find(inputPts.begin(), inputPts.end(), source);
+            if (matched != inputPts.end()) chosen = matched;
+        }
+        const auto sourcePts = *chosen;
+        // An exact later timestamp means MF dropped older queued pictures.
+        // Otherwise the FIFO associates normalized/absent MF clocks correctly.
+        inputPts.erase(inputPts.begin(), std::next(chosen));
+        return sourcePts;
+    }
+    VideoFrame convert(IMFSample* sample, std::uint64_t sourcePts) {
         ComPtr<IMFMediaBuffer> buffer;
         check(sample->ConvertToContiguousBuffer(&buffer), "Get decoded NV12 bytes");
         BYTE* data = nullptr; DWORD length = 0;
@@ -657,8 +682,7 @@ struct VideoDecoder::Impl {
         VideoFrame result;
         result.width = displayWidth; result.height = displayHeight; result.stride = result.width * 4;
         result.bgra.resize(std::size_t(result.stride) * result.height);
-        LONGLONG pts = 0;
-        result.ptsUs = SUCCEEDED(sample->GetSampleTime(&pts)) && pts >= 0 ? static_cast<std::uint64_t>(pts / 10) : fallbackPts;
+        result.ptsUs = sourcePts;
         const BYTE* uv = data + std::size_t(pitch) * dimensions.height;
         for (UINT y = 0; y < result.height; ++y) {
             const UINT sourceY = y + offsetY;
@@ -677,7 +701,7 @@ struct VideoDecoder::Impl {
         }
         return result;
     }
-    std::optional<VideoFrame> pull(std::uint64_t ptsUs) {
+    std::optional<VideoFrame> pull() {
         std::optional<VideoFrame> latest;
         for (unsigned iteration = 0; iteration < 8; ++iteration) {
             bool supplied = false;
@@ -692,7 +716,7 @@ struct VideoDecoder::Impl {
             if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) break;
             if (hr == MF_E_TRANSFORM_STREAM_CHANGE) { chooseOutput(); continue; }
             check(hr, "Decode H264 picture");
-            if (sample) latest = convert(sample.Get(), ptsUs);
+            if (sample) latest = convert(sample.Get(), picturePts(sample.Get()));
         }
         return latest;
     }
@@ -719,16 +743,27 @@ std::optional<VideoFrame> VideoDecoder::decode(std::span<const std::uint8_t> ann
     HRESULT hr = impl_->transform->ProcessInput(0, sample.Get(), 0);
     std::optional<VideoFrame> earlier;
     if (hr == MF_E_NOTACCEPTING) {
-        earlier = impl_->pull(ptsUs);
+        earlier = impl_->pull();
         hr = impl_->transform->ProcessInput(0, sample.Get(), 0);
     }
     check(hr, "Submit H264 picture");
-    auto latest = impl_->pull(ptsUs);
+    const auto units = nals(annexB);
+    const bool picture = std::any_of(units.begin(), units.end(), [](const auto& nal) {
+        const auto type = nal.front() & 31;
+        return type >= 1 && type <= 5;
+    });
+    if (picture) {
+        if (impl_->inputPts.size() >= 32)
+            throw std::runtime_error("H264 decoder exceeded the bounded source timestamp queue");
+        impl_->inputPts.push_back(ptsUs);
+    }
+    auto latest = impl_->pull();
     return latest ? std::move(latest) : std::move(earlier);
 }
 void VideoDecoder::reset() {
     std::lock_guard lock(impl_->mutex);
     ComScope com;
+    impl_->inputPts.clear();
     if (impl_->transform) {
         impl_->transform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
         impl_->transform->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);

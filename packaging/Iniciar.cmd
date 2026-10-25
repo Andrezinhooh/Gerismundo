@@ -7,5 +7,6 @@ if not exist "%~dp0Iniciar.ps1" (
   exit /b 1
 )
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Iniciar.ps1"
-if errorlevel 1 pause
-exit /b %errorlevel%
+set "launcher_result=%errorlevel%"
+if not "%launcher_result%"=="0" pause
+exit /b %launcher_result%

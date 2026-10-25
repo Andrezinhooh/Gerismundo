@@ -67,7 +67,22 @@ if(NATIVE_CALL_BUILD_CLIENT)
   endif()
   find_package(Opus CONFIG REQUIRED)
   find_path(SPEEXDSP_INCLUDE_DIR speex/speex_echo.h REQUIRED)
-  find_library(SPEEXDSP_LIBRARY NAMES speexdsp libspeexdsp REQUIRED)
+  # A single find_library may choose vcpkg's Debug archive in a multi-config
+  # Release build, mixing the Debug and Release static C runtimes.
+  get_filename_component(SPEEXDSP_PREFIX "${SPEEXDSP_INCLUDE_DIR}" DIRECTORY)
+  find_library(SPEEXDSP_LIBRARY_RELEASE NAMES speexdsp libspeexdsp
+    PATHS "${SPEEXDSP_PREFIX}/lib" NO_DEFAULT_PATH REQUIRED)
+  find_library(SPEEXDSP_LIBRARY_DEBUG NAMES speexdsp libspeexdsp
+    PATHS "${SPEEXDSP_PREFIX}/debug/lib" NO_DEFAULT_PATH)
+  add_library(nativecall-speexdsp UNKNOWN IMPORTED)
+  set_target_properties(nativecall-speexdsp PROPERTIES
+    IMPORTED_LOCATION "${SPEEXDSP_LIBRARY_RELEASE}"
+    IMPORTED_LOCATION_RELEASE "${SPEEXDSP_LIBRARY_RELEASE}"
+    MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release MAP_IMPORTED_CONFIG_MINSIZEREL Release)
+  if(SPEEXDSP_LIBRARY_DEBUG)
+    set_target_properties(nativecall-speexdsp PROPERTIES
+      IMPORTED_LOCATION_DEBUG "${SPEEXDSP_LIBRARY_DEBUG}")
+  endif()
   add_executable(native-call WIN32
     src/main.cpp src/ui.cpp src/controller.cpp src/audio.cpp
     src/capture.cpp src/video.cpp app.manifest)
@@ -76,7 +91,7 @@ if(NATIVE_CALL_BUILD_CLIENT)
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00 WINVER=0x0A00)
   target_compile_options(native-call PRIVATE /W4 /permissive- /EHsc /utf-8 /bigobj)
   target_link_libraries(native-call PRIVATE native-call-transport LibDataChannel::LibDataChannel
-    nlohmann_json::nlohmann_json Opus::opus ${SPEEXDSP_LIBRARY}
+    nlohmann_json::nlohmann_json Opus::opus nativecall-speexdsp
     Threads::Threads windowsapp runtimeobject d3d11 dxgi dwmapi
     mfplat mf mfuuid mfreadwrite wmcodecdspuuid ole32 oleaut32 uuid
     avrt mmdevapi propsys winmm user32 gdi32 comctl32 shell32 shlwapi uxtheme)

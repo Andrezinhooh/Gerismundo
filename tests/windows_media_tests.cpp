@@ -114,7 +114,9 @@ void validatePicture(const VideoFrame& frame, const VideoQuality& quality,
             frame.bgra.size() >= static_cast<std::size_t>(frame.stride) * frame.height,
             "Decoded BGRA allocation is truncated");
     require(frame.ptsUs >= firstPts && frame.ptsUs >= lastPts,
-            "Decoder failed to preserve monotonic source timestamps");
+            "Decoder failed to preserve monotonic source timestamps: actual=" +
+            std::to_string(frame.ptsUs) + " first=" + std::to_string(firstPts) +
+            " previous=" + std::to_string(lastPts));
     lastPts = frame.ptsUs;
     const auto pixel = [&](std::uint32_t x, std::uint32_t y) {
         return frame.bgra.data() + static_cast<std::size_t>(y) * frame.stride + x * 4;

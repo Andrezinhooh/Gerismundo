@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$SelfTest)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -10,6 +10,8 @@ $configPath = Join-Path $packageRoot 'config.json'
 $hostConfigPath = Join-Path $packageRoot 'host-config.json'
 $serverStatePath = Join-Path $packageRoot 'server-state.json'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
+$script:startedServer = $null
+$script:startedServerAt = $null
 
 function Read-JsonFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
@@ -21,6 +23,7 @@ function Write-JsonFile([string]$Path, $Value) {
 }
 
 function Read-Value([string]$Prompt, [string]$Default) {
+    if ($SelfTest) { return $Default }
     $label = $Prompt
     if ($Default) { $label += " [$Default]" }
     $value = Read-Host $label
@@ -48,6 +51,9 @@ function Get-ListenerProcessId([int]$Port) {
 
 function Ensure-Server([string]$BindAddress, [string]$Token) {
     $port = 8080
+    $digest = [System.Security.Cryptography.SHA256]::Create()
+    try { $tokenHash = [Convert]::ToBase64String($digest.ComputeHash($utf8.GetBytes($Token))) }
+    finally { $digest.Dispose() }
     $state = Read-JsonFile $serverStatePath
     $ownedProcess = $null
     if ($state) {
@@ -62,6 +68,10 @@ function Ensure-Server([string]$BindAddress, [string]$Token) {
     }
     $listeners = @(Get-ListenerProcessId $port)
     if ($ownedProcess) {
+        $savedHash = $state.PSObject.Properties['TokenHash']
+        if (-not $savedHash -or $savedHash.Value -ne $tokenHash) {
+            throw 'O token salvo mudou desde o inicio do servidor. Feche a janela do servidor desta pasta e tente novamente.'
+        }
         if ($state.BindAddress -ne $BindAddress) {
             throw 'Ja existe um servidor desta pasta em outro modo. Feche a janela do servidor antes de trocar entre Local e LAN.'
         }
@@ -79,6 +89,8 @@ function Ensure-Server([string]$BindAddress, [string]$Token) {
     try {
         [Environment]::SetEnvironmentVariable('NATIVE_CALL_TOKEN', $Token, 'Process')
         $server = Start-Process -FilePath $serverExe -WorkingDirectory $packageRoot -ArgumentList @('--bind', $BindAddress, '--port', '8080') -PassThru
+        $script:startedServer = $server
+        $script:startedServerAt = $server.StartTime.ToUniversalTime()
     } finally {
         [Environment]::SetEnvironmentVariable('NATIVE_CALL_TOKEN', $previousToken, 'Process')
     }
@@ -91,6 +103,7 @@ function Ensure-Server([string]$BindAddress, [string]$Token) {
                 StartedAt = $server.StartTime.ToUniversalTime().ToString('o')
                 BindAddress = $BindAddress
                 Port = $port
+                TokenHash = $tokenHash
             })
             return
         }
@@ -100,7 +113,30 @@ function Ensure-Server([string]$BindAddress, [string]$Token) {
     throw 'O servidor desta pasta nao conseguiu iniciar na porta 8080 em 15 segundos.'
 }
 
+function Stop-NewServer {
+    # This is used only by -SelfTest. A reused or unrelated server is never
+    # stopped. Revalidate identity before touching a PID that could be recycled.
+    if (-not $script:startedServer -or -not $script:startedServerAt) { return }
+    $candidate = Get-Process -Id $script:startedServer.Id -ErrorAction SilentlyContinue
+    if (-not $candidate) { return }
+    $samePath = [string]::Equals($candidate.Path, $serverExe, [StringComparison]::OrdinalIgnoreCase)
+    $sameStart = $candidate.StartTime.ToUniversalTime().Ticks -eq $script:startedServerAt.Ticks
+    if (-not $samePath -or -not $sameStart) {
+        throw 'O teste nao encerrou o PID porque a identidade do processo mudou.'
+    }
+    $candidate.Kill()
+    if (-not $candidate.WaitForExit(5000)) { throw 'O servidor criado pelo teste nao encerrou em cinco segundos.' }
+    $savedState = Read-JsonFile $serverStatePath
+    if ($savedState -and [int]$savedState.ProcessId -eq $candidate.Id -and
+        ([DateTime]::Parse($savedState.StartedAt)).ToUniversalTime().Ticks -eq $script:startedServerAt.Ticks) {
+        Remove-Item -LiteralPath $serverStatePath -Force
+    }
+}
+
 try {
+    if ($SelfTest -and ((Test-Path -LiteralPath $configPath) -or (Test-Path -LiteralPath $hostConfigPath))) {
+        throw 'O teste de primeiro uso exige uma pasta recem-extraida sem config.json nem host-config.json. Nenhuma configuracao foi modificada.'
+    }
     foreach ($exe in @($clientExe, $serverExe)) {
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
             throw "Executavel ausente: $exe. Extraia todo o pacote ZIP."
@@ -119,9 +155,12 @@ try {
         if (-not $existing) { throw 'Ainda nao existe config.json. Inicie novamente e escolha 1, 2 ou 3.' }
     } else {
         $nameDefault = $env:USERNAME
+        if ($SelfTest) { $nameDefault = 'CI' }
         if ($existing -and $existing.displayName) { $nameDefault = [string]$existing.displayName }
         $name = Read-Value 'Seu nome' $nameDefault
-        $room = Read-Value 'Sala' 'amigos'
+        $defaultRoom = 'amigos'
+        if ($SelfTest) { $defaultRoom = 'ci-local' }
+        $room = Read-Value 'Sala' $defaultRoom
         Validate-Label $name 'Nome'
         Validate-Label $room 'Sala'
         $iceServers = @()
@@ -169,9 +208,27 @@ try {
             iceServers = @($iceServers)
         })
     }
-    Write-Host 'Abrindo o aplicativo. Clique em Entrar na interface.'
-    Start-Process -FilePath $clientExe -WorkingDirectory $packageRoot -ArgumentList @('--config', ('"' + $configPath + '"')) | Out-Null
+    if ($SelfTest) {
+        $reportPath = Join-Path $packageRoot 'first-use-smoke.json'
+        $client = Start-Process -FilePath $clientExe -WorkingDirectory $packageRoot -ArgumentList @(
+            '--config', ('"' + $configPath + '"'), '--smoke-test', '--smoke-report', ('"' + $reportPath + '"')
+        ) -PassThru
+        if (-not $client.WaitForExit(15000)) {
+            $client.Kill()
+            $client.WaitForExit()
+            throw 'O cliente do teste de primeiro uso nao encerrou em 15 segundos.'
+        }
+        if ($client.ExitCode -ne 0) { throw "O cliente do primeiro uso falhou (codigo $($client.ExitCode))." }
+        $report = Read-JsonFile $reportPath
+        if (-not $report -or -not $report.passed) { throw 'O relatorio do primeiro uso nao confirmou inicializacao bem-sucedida.' }
+        Write-Host 'PASS: first-use local setup, random credential persistence, localhost server ownership and native client startup.'
+    } else {
+        Write-Host 'Abrindo o aplicativo. Clique em Entrar na interface.'
+        Start-Process -FilePath $clientExe -WorkingDirectory $packageRoot -ArgumentList @('--config', ('"' + $configPath + '"')) | Out-Null
+    }
 } catch {
     Write-Host ('Nao foi possivel iniciar: ' + $_.Exception.Message) -ForegroundColor Red
     exit 1
+} finally {
+    if ($SelfTest) { Stop-NewServer }
 }

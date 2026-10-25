@@ -1,5 +1,15 @@
 # Verificação executada e roteiro Windows
 
+## Pacotes Windows e evidência por versão
+
+O workflow Windows executa seis grupos: abertura real do cliente Win32,
+roundtrip D3D11/Media Foundation em 720p/1080p, filas, Opus, quatro clientes
+WebRTC/SRTP e sinalização. Em seguida extrai o ZIP e abre o executável portátil
+novamente. Uma release só é publicada se essas etapas forem aprovadas. Os arquivos
+`TESTES-AUTOMATIZADOS.txt` e `portable-smoke.json` da release registram o que de
+fato foi executado para aquele commit. Testes físicos da matriz abaixo continuam
+separados; os resultados Linux iniciais são mantidos como evidência histórica.
+
 ## Evidência desta sessão
 
 Data: 25/10/2026. Ambiente de execução: Linux x64, GCC 14, CMake 4.4.4,

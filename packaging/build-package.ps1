@@ -8,6 +8,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 function Absolute-Path([string]$Path) {
     if ([System.IO.Path]::IsPathRooted($Path)) { return [System.IO.Path]::GetFullPath($Path) }
@@ -19,6 +20,12 @@ $folderName = 'Gerismundo-Windows-x64'
 $stage = Join-Path $outputRoot $folderName
 $archive = Join-Path $outputRoot ($folderName + '.zip')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
+$cachePath = Join-Path (Split-Path -Parent $buildRoot) 'CMakeCache.txt'
+if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf)) { throw 'CMakeCache.txt missing beside the build configuration.' }
+$buildCache = [System.IO.File]::ReadAllText($cachePath)
+if ($buildCache -notmatch '(?m)^VCPKG_TARGET_TRIPLET:[^=]+=x64-windows-static\s*$') {
+    throw 'The portable package requires the x64-windows-static triplet and static C++ runtime.'
+}
 
 foreach ($required in @('native-call.exe', 'native-call-signaling.exe')) {
     if (-not (Test-Path -LiteralPath (Join-Path $buildRoot $required) -PathType Leaf)) {

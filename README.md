@@ -5,21 +5,29 @@ microfone Opus, compartilhamento WGC e áudio seletivo por processo. O material
 inicial continha apenas os requisitos, e o repositório de destino estava vazio.
 Portanto, esta entrega não modifica nem valida integração com um aplicativo anterior.
 
-[Baixar o código-fonte em ZIP](https://github.com/Andrezinhooh/Gerismundo/raw/refs/heads/main/dist/native-call.zip).
-Extraia o ZIP e abra a pasta `native-call`. Você também pode clonar este repositório:
+[Baixar o código-fonte em ZIP](https://github.com/Andrezinhooh/Gerismundo/archive/refs/heads/main.zip).
+Extraia o ZIP e abra a pasta do projeto. Você também pode clonar este repositório:
 
 ```powershell
 git clone https://github.com/Andrezinhooh/Gerismundo.git
 cd Gerismundo
 ```
 
-O ZIP contém o código-fonte e a documentação; não inclui um executável Windows
-compilado. O checksum está em `dist/native-call.sha256`.
+## Usar sem compilar
 
-**Estado da entrega:** código implementado, servidor e transporte compilados e
-testados em Linux. Partes Win32 passaram por verificação sintática cruzada.
-A compilação completa com MSVC e a execução de captura/reprodução no Windows
-ainda precisam ser feitas. Não há executável Windows validado nesta entrega.
+O pacote portátil de cada compilação Windows aprovada fica em
+[Releases](https://github.com/Andrezinhooh/Gerismundo/releases).
+Baixe `Gerismundo-Windows-x64.zip`, extraia todo o conteúdo para uma pasta
+gravável e abra **Iniciar.cmd**. O assistente configura o uso local, a hospedagem
+na LAN ou a entrada em um servidor existente. Consulte `docs/COMO_USAR.md`.
+Não é necessário instalar CMake, Visual Studio ou Python para executar o pacote.
+O ZIP do código-fonte indicado acima é separado do pacote portátil.
+
+O workflow só publica executáveis depois de compilar com MSVC e aprovar os testes
+automatizados Windows, incluindo abertura da interface, Opus, WebRTC e o caminho
+H.264/Media Foundation em 720p/1080p. Cada pacote inclui seu relatório executado.
+Isso não substitui os testes de microfone, captura de monitores/janelas, eco
+acústico, GPUs físicas e redes distintas descritos em `docs/TESTES.md`.
 
 ## O que o código faz
 
@@ -70,13 +78,13 @@ ctest --preset windows
 ```
 
 O executável fica em `build/windows/Release/native-call.exe` e o servidor em
-`build/windows/Release/native-call-signaling.exe`. O toolchain do vcpkg faz a
-cópia das DLLs necessárias ao diretório dos executáveis. Para distribuir, inclua
-essas DLLs e os avisos das dependências; teste em um Windows sem Visual Studio.
+`build/windows/Release/native-call-signaling.exe`. O preset usa
+`x64-windows-static`, incluindo o runtime C++ estaticamente. As APIs do Windows
+continuam dependendo dos componentes do próprio sistema operacional.
 
-O workflow `.github/workflows/windows.yml` automatiza a compilação e os testes
-quando este projeto for colocado em um repositório. Ele foi incluído, mas não foi
-executado em um serviço externo nesta sessão.
+O workflow `.github/workflows/windows.yml` compila, testa, empacota e publica uma
+release após aprovação. Para gerar o mesmo pacote localmente, após o build e os
+testes: `./packaging/build-package.ps1 -BuildDirectory build/windows/Release`.
 
 ## Executar localmente
 
