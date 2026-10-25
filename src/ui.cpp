@@ -567,8 +567,9 @@ struct Mailbox {
 
 class MainWindow {
 public:
-    MainWindow(HINSTANCE instance, ConnectionSettings settings)
-        : instance_(instance), settings_(std::move(settings)), mailbox_(std::make_shared<Mailbox>()) {}
+    MainWindow(HINSTANCE instance, ConnectionSettings settings, bool smokeTest)
+        : instance_(instance), settings_(std::move(settings)), mailbox_(std::make_shared<Mailbox>()),
+          smokeTest_(smokeTest) {}
     ~MainWindow() {
         {
             std::lock_guard lock(mailbox_->mutex);
@@ -600,10 +601,13 @@ public:
             [mailbox](std::string error) { mailbox->error(std::move(error)); }});
         update();
         ShowWindow(window_, showCommand); UpdateWindow(window_);
+        if (smokeTest_ && !SetTimer(window_, 2, 2000, nullptr))
+            throw std::runtime_error("Não foi possível agendar o encerramento do teste da interface.");
         MSG message{};
         for (;;) {
             const auto result = GetMessageW(&message, nullptr, 0, 0);
-            if (result <= 0) return result ? 1 : static_cast<int>(message.wParam);
+            if (result <= 0)
+                return result || !smokeFailure_.empty() ? 1 : static_cast<int>(message.wParam);
             if (message.message == WM_KEYDOWN && message.wParam == VK_F11) { toggleFullscreen(); continue; }
             if (message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE && fullscreen_) { toggleFullscreen(); continue; }
             if (!IsDialogMessageW(window_, &message)) {
@@ -632,6 +636,8 @@ private:
     std::string watching_;
     std::wstring inputDevice_, outputDevice_;
     bool fullscreen_{};
+    bool smokeTest_{};
+    std::string smokeFailure_;
     WINDOWPLACEMENT savedPlacement_{sizeof(savedPlacement_)};
 
     int d(int value) const { return scaled(value, dpi_); }
@@ -658,7 +664,13 @@ private:
         }
         if (!self) return DefWindowProcW(window, message, wParam, lParam);
         try { return self->handle(message, wParam, lParam); }
-        catch (const std::exception& exception) { messageError(window, exception.what()); return message == WM_CREATE ? -1 : 0; }
+        catch (const std::exception& exception) {
+            if (self->smokeTest_) {
+                self->smokeFailure_ = exception.what();
+                if (message != WM_CREATE) PostMessageW(window, WM_CLOSE, 0, 0);
+            } else messageError(window, exception.what());
+            return message == WM_CREATE ? -1 : 0;
+        }
     }
 
     static LRESULT CALLBACK videoProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -986,18 +998,28 @@ private:
             if (!errors.empty()) {
                 std::string text;
                 for (const auto& error : errors) { if (!text.empty()) text += "\n\n"; text += error; }
-                messageError(window_, text);
+                if (smokeTest_) {
+                    smokeFailure_ = std::move(text);
+                    PostMessageW(window_, WM_CLOSE, 0, 0);
+                } else messageError(window_, text);
             }
             return 0;
         }
         case FullscreenMessage: toggleFullscreen(); return 0;
-        case WM_TIMER: if (wParam == 1) update(); return 0;
+        case WM_TIMER:
+            if (wParam == 1) update();
+            else if (wParam == 2 && smokeTest_) {
+                KillTimer(window_, 2);
+                PostMessageW(window_, WM_CLOSE, 0, 0);
+            }
+            return 0;
         case WM_CLOSE: DestroyWindow(window_); return 0;
         case WM_DESTROY:
             KillTimer(window_, 1);
+            KillTimer(window_, 2);
             { std::lock_guard lock(mailbox_->mutex); mailbox_->closed = true; mailbox_->window = nullptr; }
             controller_.reset();
-            PostQuitMessage(0); return 0;
+            PostQuitMessage(smokeFailure_.empty() ? 0 : 1); return 0;
         }
         return DefWindowProcW(window_, message, wParam, lParam);
     }
@@ -1005,7 +1027,7 @@ private:
 
 } // namespace
 
-int runNativeApplication(HINSTANCE instance, int showCommand, ConnectionSettings settings) {
+int runNativeApplication(HINSTANCE instance, int showCommand, ConnectionSettings settings, bool smokeTest) {
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES};
     if (!InitCommonControlsEx(&controls)) throw std::runtime_error("Não foi possível iniciar os controles do Windows.");
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -1013,7 +1035,7 @@ int runNativeApplication(HINSTANCE instance, int showCommand, ConnectionSettings
     try {
         int result;
         {
-            MainWindow window(instance, std::move(settings));
+            MainWindow window(instance, std::move(settings), smokeTest);
             result = window.run(showCommand);
         }
         CoUninitialize();

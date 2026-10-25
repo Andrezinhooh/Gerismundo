@@ -1,25 +1,108 @@
 name: Windows native build
 on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-cache,readwrite"
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
     steps:
       - uses: actions/checkout@v4
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          foreach ($scriptFile in Get-ChildItem packaging/*.ps1) {
+            $parseTokens = $null; $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($scriptFile.FullName, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+          }
       - uses: actions/checkout@v4
         with:
           repository: microsoft/vcpkg
           ref: 817892b0ecbc6af994dd6df999c73faf795adbf2
           path: _tools/vcpkg
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: .vcpkg-cache
+          key: windows-static-v1-${{ hashFiles('vcpkg.json', 'CMakePresets.json') }}
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
           & ./_tools/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
           "VCPKG_ROOT=$((Resolve-Path ./_tools/vcpkg).Path)" >> $env:GITHUB_ENV
       - name: Install test dependency
         run: python -m pip install "websockets>=15,<17"
       - name: Configure
-        run: cmake --preset windows
+        shell: pwsh
+        run: |
+          $sdk = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/Include" -Directory |
+            Where-Object { [version]$_.Name -ge [version]'10.0.22621.0' } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $sdk) { throw 'Windows SDK 22621 or later is required' }
+          cmake --preset windows "-DCMAKE_SYSTEM_VERSION=$($sdk.Name)"
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed' }
       - name: Build
-        run: cmake --build --preset windows
-      - name: Test
-        run: ctest --preset windows
+        run: cmake --build --preset windows --parallel 4
+      - name: Test native Windows executables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          ctest --preset windows --output-junit "$pwd/out/test-results.xml" |
+            Tee-Object -FilePath out/ctest-windows.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows tests failed' }
+      - name: Create portable package
+        shell: pwsh
+        run: |
+          ./packaging/build-package.ps1 -BuildDirectory build/windows/Release -OutputDirectory out -TestReportPath out/ctest-windows.txt
+      - name: Test extracted portable executable
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'gerismundo-portable-check'
+          Expand-Archive -Path out/Gerismundo-Windows-x64.zip -DestinationPath $destination
+          $exe = Get-ChildItem $destination -Filter native-call.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'Packaged client missing' }
+          $report = Join-Path $exe.Directory.FullName 'portable-smoke.json'
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList @('--smoke-test', '--smoke-report', $report) -WorkingDirectory $exe.Directory.FullName -PassThru
+          if (-not $process.WaitForExit(15000)) { $process.Kill(); throw 'Portable startup timed out' }
+          if ($process.ExitCode -ne 0) { throw "Portable executable failed: $($process.ExitCode)" }
+          $result = Get-Content -Raw $report | ConvertFrom-Json
+          if (-not $result.passed) { throw 'Portable smoke report did not pass' }
+          Copy-Item $report out/portable-smoke.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gerismundo-Windows-x64
+          path: |
+            out/Gerismundo-Windows-x64.zip
+            out/Gerismundo-Windows-x64.zip.sha256
+            out/ctest-windows.txt
+            out/test-results.xml
+            out/portable-smoke.json
+          if-no-files-found: error
+          compression-level: 0
+      - name: Publish downloadable Windows ZIP
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "windows-build-$env:GITHUB_RUN_NUMBER"
+          gh release create $tag --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "Gerismundo Windows x64 - build $env:GITHUB_RUN_NUMBER" --notes "Pacote Windows x64 com executaveis, dependencias, fontes e relatorio de testes automatizados. Microfone, captura de tela e uso entre redes diferentes ainda exigem validacao em desktops Windows reais."
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
+          gh release upload $tag out/Gerismundo-Windows-x64.zip out/Gerismundo-Windows-x64.zip.sha256 out/ctest-windows.txt out/portable-smoke.json --repo "$env:GITHUB_REPOSITORY" --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-failure-diagnostics
+          path: |
+            build/windows/vcpkg-manifest-install.log
+            build/windows/Testing/Temporary/LastTest.log
+            build/windows/smoke-report.json
+            out/ctest-windows.txt
+          if-no-files-found: ignore

@@ -2,6 +2,7 @@
 /out/
 /work/
 /_tools/
+/.vcpkg-cache/
 /vcpkg_installed/
 /config.json
 /.vs/
